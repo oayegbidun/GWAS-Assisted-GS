@@ -1,0 +1,330 @@
+---
+title: "Work In Jesus name"
+author: "Olufunke Ayegbidun"
+date: "2023-04-28"
+output:
+  word_document: default
+  pdf_document: default
+---
+# Load in the required packages and functions
+```{r include=FALSE}
+source("http://zzlab.net/GAPIT/GAPIT.library.R")
+source("http://zzlab.net/GAPIT/gapit_functions.txt")
+```
+
+# Read in the datasets
+```{r include =F}
+myGenomap <- read.table("Rice.Genotype.map.txt", head=T)
+Genx<- read.delim("Rice_GBS_numeric.txt", head=T, skip=1) #from TASSEL
+#GAPIT numeric conversion does not have taxa names. So, impute taxa names from TASSEL taxa conversion: TASSEL conversion has an extra column which I haven't figured out, so I am not using it.
+myGenodata <- read.delim("Rice.Genotype.Numerical.txt", head=T) #from GAPIT
+myGenodata$taxa <- Genx$X.Marker. #change Taxa column to have actual taxa names
+colnames(myGenodata)[1] <-"Taxa" #change taxa to Taxa
+```
+
+```{r include=FALSE}
+myfunction <- function(h2, NQTN){
+myPheno <- GAPIT.Phenotype.Simulation(GD=myGenodata,
+                                        GM=myGenomap,
+                                        h2=h2,
+                                        NQTN=NQTN,
+                                        QTNDist="normal")
+##########Run GWAS using best model BLINK for the entire population
+  myGWAS.whole <- GAPIT(
+    Y=myPheno$Y,
+    GD=myGenodata,#Genotype
+    GM=myGenomap,#Map information
+    PCA.total=3,
+    QTN.position=myPheno$QTN.position,
+    model="BLINK",
+    file.output = F)
+### method 1B: identify significant SNPs to be used as covariate in method 4
+  #determine markers with threshold of significance
+  mySigSNP=myGWAS.whole$GWAS[,4]<0.01/length(myGWAS.whole$GWAS[,4])
+  ## combine significant SNPs with PCA to use as covariate later
+  myWholeQTN=cbind(myGWAS.whole$PCA,myGenodata[,c(FALSE,mySigSNP)])
+  #genodata for the significant SNPs for each taxa
+  myWholeGD= myGenodata[,c(TRUE,mySigSNP)]
+  #genomap for significant SNPs
+  myWholeGM=myGenomap[mySigSNP,]
+ 
+  ####Method 2A: Run GWAS on a subset of the population
+  n= nrow(myGenodata)
+  #remaining 20% as test population
+  test <- sample(n, round(n/5), replace=F)
+  #select 80% of the data as training population
+  train <- setdiff(1:nrow(myGenodata), test)
+  ###Gene mapping GWAS with training data set
+  myGWAS.sub <- GAPIT(
+    Y=myPheno$Y[train,],
+    GD=myGenodata,
+    GM=myGenomap,
+    PCA.total=3,
+    model="BLINK",
+    QTN.position=myPheno$QTN.position,
+    memo="GWAS",
+    file.output=F)
+ 
+  ## identify the significant SNPs
+  mySubSNP=myGWAS.sub$GWAS[,4]<0.01/length(myGWAS.sub$GWAS[,4])
+  ## combine significant SNPs with PCA to use as covariate later
+  mySubQTN=cbind(myGWAS.sub$PCA,myGenodata[,c(FALSE,mySubSNP)])
+  #genodata for the significant SNPs for each taxa
+  mySubGD=myGenodata[,c(TRUE,mySubSNP)]
+  #genomap for significant SNPs
+  mySubGM=myGenomap[mySubSNP,]
+ 
+  ###MAS with training population GWAS
+  myMAS.sub <- GAPIT(
+    Y=myPheno$Y[train,],
+    GD=myGenodata,
+    GM=myGenomap,
+    CV=mySubQTN,
+    model="GLM",
+    SNP.test=FALSE,
+    memo="MAS",
+    file.output=F)
+ 
+  order=match(myPheno$Y[,1],myMAS.sub$Pred[,1])
+  myPred=myMAS.sub$Pred[order,]
+  MAS.sub.test=cor(myPred[test,8],myPheno$u[test])^2
+  MAS.sub.train=cor(myPred[train,8],myPheno$u[train])^2
+ 
+  #######MAS with whole population GWAS
+  myMAS.whole <- GAPIT(
+    Y=myPheno$Y[train,],
+    GD=myGenodata,
+    GM=myGenomap,
+    CV=myWholeQTN,
+    model="GLM",
+    SNP.test=FALSE,
+    memo="MAS",
+    file.output=F)
+ 
+  ###Predict the correlation between predicted and observed
+  order1=match(myPheno$Y[,1],myMAS.whole$Pred[,1])
+  myPredWhole=myMAS.whole$Pred[order1,]
+  MAS.whole.test=cor(myPredWhole[test,8],myPheno$u[test])^2
+  MAS.whole.train=cor(myPredWhole[train,8],myPheno$u[train])^2
+ 
+ 
+  ####Stand alone MAS
+  myMAS<- GAPIT(
+    Y=myPheno$Y[train,],
+    GD=myGenodata,
+    GM=myGenomap,
+    PCA.total = 3,
+    model="GLM",
+    SNP.test=FALSE,
+    memo="MAS",
+    file.output = F)
+ 
+  order2=match(myPheno$Y[,1],myMAS$Pred[,1])
+  myPredMAS=myMAS$Pred[order2,]
+  MAS.test=cor(myPredMAS[test,8],myPheno$u[test])^2
+  MAS.train=cor(myPredMAS[train,8],myPheno$u[train])^2
+ 
+  #### Stand alone gBLUP
+  myGBLUP <- GAPIT(
+    Y=myPheno$Y[train,],
+    GD=myGenodata,
+    GM=myGenomap,
+    PCA.total=3,
+    model="gBLUP",
+    SNP.test=FALSE,
+    memo="gBLUP",
+    file.output=F)
+ 
+  order3=match(myPheno$Y[,1],myGBLUP$Pred[,1])
+  myPredG=myGBLUP$Pred[order3,]
+  gblup.test=cor(myPredG[test,5],myPheno$u[test])^2
+  gblup.train=cor(myPredG[train,5],myPheno$u[train])^2
+ 
+  #### GBLUP with whole GWAS data
+  myGBLUP.whole <- GAPIT(
+    Y=myPheno$Y[train,],
+    GD=myGenodata,
+    GM=myGenomap,
+    CV=myWholeQTN,
+    model="gBLUP",
+    SNP.test=FALSE,
+    memo="gBLUP",
+    file.output = F)
+ 
+  order4=match(myPheno$Y[,1],myGBLUP.whole$Pred[,1])
+  myPredG.whole=myGBLUP.whole$Pred[order4,]
+  gblup.whole.test=cor(myPredG.whole[test,5],myPheno$u[test])^2
+  gblup.whole.train=cor(myPredG.whole[train,5],myPheno$u[train])^2
+ 
+ 
+  #### GBLUP with sub GWAS data
+  myGBLUP.sub <- GAPIT(
+    Y=myPheno$Y[train,],
+    GD=myGenodata,
+    GM=myGenomap,
+    CV=mySubQTN,
+    model="gBLUP",
+    SNP.test=FALSE,
+    memo="gBLUP",
+    file.output = F)
+ 
+  order5=match(myPheno$Y[,1],myGBLUP.sub$Pred[,1])
+  myPredG.sub=myGBLUP.sub$Pred[order5,]
+  gblup.sub.test=cor(myPredG.sub[test,5],myPheno$u[test])^2
+  gblup.sub.train=cor(myPredG.sub[train,5],myPheno$u[train])^2
+ 
+  myResult <- c(MAS.sub.test, MAS.sub.train, MAS.whole.test, MAS.whole.train, MAS.test, MAS.train, gblup.sub.test, gblup.sub.train, gblup.whole.test, gblup.whole.train, gblup.test, gblup.train , nrow(myWholeGM), nrow(mySubGM))
+ 
+  names(myResult) <- c("MAS Valid Test", "MAS Valid Train","MAS Invalid Test", "MAS Invalid Train", "MAS Test", "MAS Train", "GWAS-GS Test valid", "GWAS-GS Train valid", "GWAS-GS Test Invalid", "GWAS-GS Train Invalid"," GS Test", "GS Train", "Whole SNP", "Sub SNP")
+  return(myResult)
+}
+```
+
+```{r include=FALSE}
+GWASGS1 <- replicate(10, myfunction(h2=0.85, NQTN=10))
+```
+
+```{r}
+#calculate prediction standard error
+se <- function(x) {
+  sd(x)/(sqrt(length(x)))
+}
+
+
+  #data from problem 9 into matrix so I can work with it easier
+my.mat = as.matrix(GWASGS1)
+t.mat<-t(my.mat)
+colnames(t.mat) <- c("MAS Valid Test", "MAS Valid Train","MAS Invalid Test", "MAS Invalid Train", "MAS Test", "MAS Train", "GWAS-GS Test valid", "GWAS-GS Train valid", "GWAS-GS Test Invalid", "GWAS-GS Train Invalid"," GS Test", "GS Train", "Whole SNP", "Sub SNP")
+tmat1 <- t.mat[, -c(13:14)]
+
+ 
+#mean and sd_error
+average = rbind(mean(my.mat[1,]), mean(my.mat[2,]), mean(my.mat[3,]), mean(my.mat[4,]), mean(my.mat[5,]), mean(my.mat[6,]), mean(my.mat[7,]), mean(my.mat[8,]), mean(my.mat[9,]), mean(my.mat[10,]), mean(my.mat[11,]), mean(my.mat[12,]), mean(my.mat[13,]), mean(my.mat[14,]))
+standarderror = rbind(se(my.mat[1,]), se(my.mat[2,]), se(my.mat[3,]), se(my.mat[4,]), se(my.mat[5,]), se(my.mat[6,]), se(my.mat[7,]), se(my.mat[8,]), se(my.mat[9,]), se(my.mat[10,]), se(my.mat[11,]), se(my.mat[12,]), se(my.mat[13,]), se(my.mat[14,]))
+
+mycom = cbind(average,standarderror)
+colnames(mycom) <- c("Average", "Standard Error")
+rownames(mycom) <- c("MAS Valid Test", "MAS Valid Train","MAS Invalid Test", "MAS Invalid Train", "MAS Test", "MAS Train", "GWAS-GS Test valid", "GWAS-GS Train valid", "GWAS-GS Test Invalid", "GWAS-GS Train Invalid"," GS Test", "GS Train", "Whole SNP", "Sub SNP")
+
+knitr::kable(mycom,caption = "Average and Standard error for h2=85% QTN=10")
+
+
+par(mar=c(5,9,3,1))
+boxplot(x=tmat1, notch=FALSE, horizontal=T, ylim=c(0,1), las=1,
+        col=(c("skyblue","blue")),
+        main="Prediction accuracy for \n h2=0.85, NQTN=10", xlab="prediction accuracy")
+legend("topright", inset=0.05, legend=c("train data", "test data"),
+       fill=c("skyblue","blue"), cex=0.8)
+```
+
+
+```{r include=FALSE}
+GWASGS2 <- replicate(10, myfunction(h2=0.85, NQTN=20))
+```
+
+
+```{r }
+#calculate prediction standard error
+se <- function(x) {
+  sd(x)/(sqrt(length(x)))
+}
+
+
+  #data from problem 9 into matrix so I can work with it easier
+my.mat2 = as.matrix(GWASGS2)
+t.mat2<-t(my.mat2)
+colnames(t.mat2) <- c("MAS Valid Test", "MAS Valid Train","MAS Invalid Test", "MAS Invalid Train", "MAS Test", "MAS Train", "GWAS-GS Test valid", "GWAS-GS Train valid", "GWAS-GS Test Invalid", "GWAS-GS Train Invalid"," GS Test", "GS Train", "Whole SNP", "Sub SNP")
+tmat2 <- t.mat2[, -c(13:14)]
+
+#mean and sd_error
+average = rbind(mean(my.mat2[1,]), mean(my.mat2[2,]), mean(my.mat2[3,]), mean(my.mat2[4,]), mean(my.mat2[5,]), mean(my.mat2[6,]), mean(my.mat2[7,]), mean(my.mat2[8,]), mean(my.mat2[9,]), mean(my.mat2[10,]), mean(my.mat2[11,]), mean(my.mat2[12,]), mean(my.mat2[13,]), mean(my.mat2[14,]))
+standarderror = rbind(se(my.mat2[1,]), se(my.mat2[2,]), se(my.mat2[3,]), se(my.mat2[4,]), se(my.mat2[5,]), se(my.mat2[6,]), se(my.mat2[7,]), se(my.mat2[8,]), se(my.mat2[9,]), se(my.mat2[10,]), se(my.mat2[11,]), se(my.mat2[12,]), se(my.mat2[13,]), se(my.mat2[14,]))
+
+mycom2 = cbind(average,standarderror)
+colnames(mycom2) <- c("Average", "Standard Error")
+rownames(mycom2) <- c("MAS Valid Test", "MAS Valid Train","MAS Invalid Test", "MAS Invalid Train", "MAS Test", "MAS Train", "GWAS-GS Test valid", "GWAS-GS Train valid", "GWAS-GS Test Invalid", "GWAS-GS Train Invalid"," GS Test", "GS Train", "Whole SNP", "Sub SNP")
+
+knitr::kable(mycom2,caption = "Average and Standard error for h2=85% QTN=20")
+
+
+par(mar=c(5,9,3,1))
+boxplot(x=tmat2, notch=FALSE, horizontal=T, ylim=c(0,1), las=1,
+        col=(c("skyblue","blue")),
+        main="Prediction accuracy for \n h2=0.85, NQTN=20", xlab="prediction accuracy")
+legend("topright", inset=0.05, legend=c("train data", "test data"),
+       fill=c("skyblue","blue"), cex=0.8)
+```
+
+
+```{r include=FALSE}
+GWASGS3 <- replicate(10, myfunction(h2=0.25, NQTN=20))
+```
+
+```{r}
+#calculate prediction standard error
+se <- function(x) {
+  sd(x)/(sqrt(length(x)))
+}
+
+
+  #change into matrix so I can work with it easier
+my.mat3 = as.matrix(GWASGS3)
+t.mat3<-t(my.mat3)
+colnames(t.mat3) <- c("MAS Valid Test", "MAS Valid Train","MAS Invalid Test", "MAS Invalid Train", "MAS Test", "MAS Train", "GWAS-GS Test valid", "GWAS-GS Train valid", "GWAS-GS Test Invalid", "GWAS-GS Train Invalid"," GS Test", "GS Train", "Whole SNP", "Sub SNP")
+tmat3 <- t.mat3[, -c(13:14)]
+
+#mean and sd_error
+average = rbind(mean(my.mat3[1,]), mean(my.mat3[2,]), mean(my.mat3[3,]), mean(my.mat3[4,]), mean(my.mat3[5,]), mean(my.mat3[6,]), mean(my.mat3[7,]), mean(my.mat3[8,]), mean(my.mat3[9,]), mean(my.mat3[10,]), mean(my.mat3[11,]), mean(my.mat3[12,]), mean(my.mat3[13,]), mean(my.mat3[14,]))
+standarderror = rbind(se(my.mat3[1,]), se(my.mat3[2,]), se(my.mat3[3,]), se(my.mat3[4,]), se(my.mat3[5,]), se(my.mat3[6,]), se(my.mat3[7,]), se(my.mat3[8,]), se(my.mat3[9,]), se(my.mat3[10,]), se(my.mat3[11,]), se(my.mat3[12,]), se(my.mat3[13,]), se(my.mat3[14,]))
+
+mycom3 = cbind(average,standarderror)
+colnames(mycom3) <- c("Average", "Standard Error")
+rownames(mycom3) <- c("MAS Valid Test", "MAS Valid Train","MAS Invalid Test", "MAS Invalid Train", "MAS Test", "MAS Train", "GWAS-GS Test valid", "GWAS-GS Train valid", "GWAS-GS Test Invalid", "GWAS-GS Train Invalid"," GS Test", "GS Train", "Whole SNP", "Sub SNP")
+
+knitr::kable(mycom3,caption = "Average and Standard error for h2=25% NQTN=20")
+
+
+par(mar=c(5,9,3,1))
+boxplot(x=tmat3, notch=FALSE, horizontal=T, ylim=c(0,1), las=1,
+        col=(c("skyblue","blue")),
+        main="Prediction accuracy for \n h2=0.25, NQTN=20", xlab="prediction accuracy")
+legend("topright", inset=0.05, legend=c("train data", "test data"),
+       fill=c("skyblue","blue"), cex=0.8)
+```
+
+
+```{r include=FALSE}
+GWASGS4 <- replicate(10, myfunction(h2=0.25, NQTN=10))
+```
+
+```{r}
+#calculate prediction standard error
+se <- function(x) {
+  sd(x)/(sqrt(length(x)))
+}
+
+
+  #data from problem 9 into matrix so I can work with it easier
+my.mat4 = as.matrix(GWASGS4)
+t.mat4<-t(my.mat4)
+colnames(t.mat4) <- c("MAS Valid Test", "MAS Valid Train","MAS Invalid Test", "MAS Invalid Train", "MAS Test", "MAS Train", "GWAS-GS Test valid", "GWAS-GS Train valid", "GWAS-GS Test Invalid", "GWAS-GS Train Invalid"," GS Test", "GS Train", "Whole SNP", "Sub SNP")
+tmat4 <- t.mat4[, -c(13:14)]
+
+#mean and sd_error
+average = rbind(mean(my.mat4[1,]), mean(my.mat4[2,]), mean(my.mat4[3,]), mean(my.mat4[4,]), mean(my.mat4[5,]), mean(my.mat4[6,]), mean(my.mat4[7,]), mean(my.mat4[8,]), mean(my.mat4[9,]), mean(my.mat4[10,]), mean(my.mat4[11,]), mean(my.mat4[12,]), mean(my.mat4[13,]), mean(my.mat4[14,]))
+standarderror = rbind(se(my.mat4[1,]), se(my.mat4[2,]), se(my.mat4[3,]), se(my.mat4[4,]), se(my.mat4[5,]), se(my.mat4[6,]), se(my.mat4[7,]), se(my.mat4[8,]), se(my.mat4[9,]), se(my.mat4[10,]), se(my.mat4[11,]), se(my.mat4[12,]), se(my.mat4[13,]), se(my.mat4[14,]))
+
+mycom4 = cbind(average,standarderror)
+colnames(mycom4) <- c("Average", "Standard Error")
+rownames(mycom4) <- c("MAS Valid Test", "MAS Valid Train","MAS Invalid Test", "MAS Invalid Train", "MAS Test", "MAS Train", "GWAS-GS Test valid", "GWAS-GS Train valid", "GWAS-GS Test Invalid", "GWAS-GS Train Invalid"," GS Test", "GS Train", "Whole SNP", "Sub SNP")
+
+knitr::kable(mycom4,caption = "Average and Standard error for h2=25% NQTN=10")
+
+
+par(mar=c(5,9,3,1))
+boxplot(x=tmat4, notch=FALSE, horizontal=T, ylim=c(0,1), las=1,
+        col=(c("skyblue","blue")),
+        main="Prediction accuracy for \n h2=0.25, NQTN=10", xlab="prediction accuracy")
+legend("topright", inset=0.05, legend=c("train data", "test data"),
+       fill=c("skyblue","blue"), cex=0.8)
+```
